@@ -8,23 +8,43 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.kokoroTTS.replicaCount }}
   {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.autoscaling.enabled) }}
+  # A ReadWriteOnce volume cannot be handed between two pods, so the default
+  # rolling update deadlocks: the new pod waits for a volume the old one still
+  # holds. Recreate accepts a gap instead of hanging.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kokoro-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- if .Values.kokoroTTS.apiKey.value }}
+        checksum/api-key: {{ .Values.kokoroTTS.apiKey.value | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "kokoro-server.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.kokoroTTS.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "kokoro-server.serviceAccountName" . }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers: []
@@ -38,15 +58,46 @@ spec:
             - name: PYTHONPATH
               value: "/app:/app/api"
             - name: USE_GPU
-              value: "true"
+              value: {{ .Values.gpu.enabled | quote }}
             - name: PYTHONUNBUFFERED
               value: "1"
+            - name: PORT
+              value: {{ .Values.kokoroTTS.port | default 8880 | quote }}
+            {{- if .Values.persistence.enabled }}
+            # The server writes generated audio and its self-signed TLS pair
+            # under OUTPUT_DIR; pointing it at the volume is what makes the
+            # certificate survive a restart.
+            - name: OUTPUT_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_ENABLED
+              value: "true"
+            - name: TLS_SELF_SIGNED
+              value: {{ .Values.tls.selfSigned | quote }}
+            {{- with .Values.tls.cn }}
+            - name: TLS_CN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.tls.san }}
+            - name: TLS_SAN
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with (include "kokoro-server.tlsCertPath" .) }}
+            - name: TLS_CERT_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with (include "kokoro-server.tlsKeyPath" .) }}
+            - name: TLS_KEY_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.kokoroTTS.apiKey.enabled }}
             - name: API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "kokoroTTS.apiKey.existingSecret is required when apiKey.enabled" .Values.kokoroTTS.apiKey.existingSecret }}
-                  key: {{ .Values.kokoroTTS.apiKey.secretKey }}
+                  name: {{ include "kokoro-server.apiKeySecretName" . }}
+                  key: {{ include "kokoro-server.apiKeySecretKey" . }}
             {{- end }}
             {{- with .Values.kokoroTTS.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -56,15 +107,41 @@ spec:
               containerPort: {{ .Values.kokoroTTS.port | default 8880 }}
               protocol: TCP
           startupProbe:
-            {{- toYaml .Values.kokoroTTS.probes.startup | nindent 12 }}
+            {{- include "kokoro-server.probe" (dict "probe" .Values.kokoroTTS.probes.startup "ctx" .) | nindent 12 }}
           livenessProbe:
-            {{- toYaml .Values.kokoroTTS.probes.liveness | nindent 12 }}
+            {{- include "kokoro-server.probe" (dict "probe" .Values.kokoroTTS.probes.liveness "ctx" .) | nindent 12 }}
           readinessProbe:
-            {{- toYaml .Values.kokoroTTS.probes.readiness | nindent 12 }}
+            {{- include "kokoro-server.probe" (dict "probe" .Values.kokoroTTS.probes.readiness "ctx" .) | nindent 12 }}
           resources:
-            {{- toYaml .Values.kokoroTTS.resources | nindent 12 }}
-          volumeMounts: []
-      volumes: []
+            {{- include "kokoro-server.resources" . | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/kokoro/tls
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "kokoro-server.dataClaimName" . }}
+        {{- end }}
+        {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -75,5 +152,9 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}

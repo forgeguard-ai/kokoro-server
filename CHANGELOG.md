@@ -6,6 +6,64 @@ based on [Keep a Changelog](https://keepachangelog.com/) and this project follow
 
 Per-PR attribution and contributor credits are published automatically on the corresponding GitHub release page; this file is the curated, human-readable summary.
 
+## [1.2.0]
+
+**A Helm chart release: the server code is unchanged.** The version moves
+because this project versions as one thing — `VERSION` drives `pyproject.toml`
+and the chart alike, and the release workflow packages the chart with the
+project version — so a chart-only change still takes a minor bump.
+
+1.1.0 added HTTPS, GPU telemetry and a persistent data directory to the server
+but never surfaced any of it in the chart, so a Kubernetes deployment could not
+reach features the compose deployment had. This closes that gap and adds the
+cluster machinery the chart was missing.
+
+#### Added
+- **`tls`**: serve HTTPS from the pod (`TLS_ENABLED`, `TLS_SELF_SIGNED`,
+  `TLS_CN`, `TLS_SAN`, `TLS_CERT_FILE`, `TLS_KEY_FILE`). Supply a real
+  certificate with `tls.existingSecret` — a cert-manager Certificate's secret
+  works unchanged — or let the server self-sign. Probes gain `scheme: HTTPS`
+  automatically; without that, enabling TLS would leave every probe speaking
+  plaintext to an SSL listener and the pod would never go ready.
+- **`persistence`**: a PVC mounted at `persistence.mountPath` and exported as
+  `OUTPUT_DIR`. This is what makes a self-signed certificate survive a restart.
+  The Deployment switches to the `Recreate` strategy when it is on, because a
+  ReadWriteOnce volume cannot be handed between two pods and a rolling update
+  would deadlock waiting for one.
+- **`runtimeClassName`**: required wherever the NVIDIA container runtime is not
+  the cluster default. Without it a pod lands on a GPU node and starts with no
+  visible card.
+- **`gpu`** (`enabled`, `resourceKey`, `count`): the accelerator request, moved
+  out of `resources` so the vendor resource name is a value. `gpu.enabled:
+  false` also sets `USE_GPU=false` for a working CPU deployment.
+- **`podDisruptionBudget`**, **`networkPolicy`** (deny-by-default, with a DNS
+  egress allowance), **`priorityClassName`**, **`topologySpreadConstraints`**,
+  **`terminationGracePeriodSeconds`**, **`podLabels`**, **`service.annotations`**,
+  and **`extraVolumes`** / **`extraVolumeMounts`**.
+- **`kokoroTTS.apiKey.value`**: the chart creates the Secret. Previously
+  `existingSecret` was the only way to supply a key. Setting both is refused
+  rather than silently preferring one.
+- **`examples/self-hosted-values.yaml`**: the preinstalled-driver GPU Operator
+  shape (`driver.enabled=false`, `toolkit.enabled=false`), which is what most
+  on-premises clusters run and what neither existing example covered.
+
+#### Fixed
+- `kokoroTTS.port` now sets the server's `PORT`. It previously moved the
+  `containerPort` and the Service while the process kept listening on 8880, so
+  any value but the default produced a pod that never passed its probes.
+
+#### Changed
+- `kokoroTTS.resources` no longer carries `nvidia.com/gpu` — the `gpu` block
+  above owns it. Existing values files that set it keep working; the `gpu` block
+  writes the same request.
+- The Helm test hits `/health` and follows the configured scheme, rather than
+  fetching `/` over plain HTTP.
+
+#### Not added
+- No `ServiceMonitor`. The server's telemetry endpoint `/system` returns JSON,
+  not Prometheus exposition format, so a ServiceMonitor would scrape nothing.
+  Exposing `/metrics` is server work, not chart work.
+
 ## [1.1.0] - 2026-07-16
 
 Cross-cutting parity pass to bring this server in line with the sibling

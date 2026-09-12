@@ -21,8 +21,19 @@
 kokoroTTS:
   replicaCount: 8
   port: 8880
-  tag: v0.2.0
+  # Leave unset to track the chart's appVersion, which is a pinned release.
+  # tag: 1.1.0
   pullPolicy: IfNotPresent
+
+# TLS terminates at the Ingress here (cert-manager issues the certificate
+# below), so the pods themselves speak plain HTTP inside the cluster. That is
+# why the `tls:` block is absent — turning it on as well would need the
+# backend-protocol annotation on the Ingress.
+
+# No persistence: several replicas behind one Service cannot share a
+# ReadWriteOnce volume, and with TLS terminated at the edge there is no
+# certificate to keep. Kokoro's voice weights are baked into the image, so
+# nothing is re-downloaded on restart.
 
 # Azure specific settings for spot t4 GPU nodes with Nvidia GPU operator
 tolerations:

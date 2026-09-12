@@ -1,0 +1,25 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- $pdb := .Values.podDisruptionBudget -}}
+{{- if and $pdb.minAvailable $pdb.maxUnavailable -}}
+{{- fail "podDisruptionBudget: set minAvailable OR maxUnavailable, not both" -}}
+{{- end -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kokoro-server.fullname" . }}
+  labels:
+    {{- include "kokoro-server.labels" . | nindent 4 }}
+spec:
+  {{- if $pdb.minAvailable }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else if $pdb.maxUnavailable }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- else }}
+  # Neither given: the useful default for a single-replica GPU service is to
+  # make a drain block and report, rather than evict silently.
+  minAvailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kokoro-server.selectorLabels" . | nindent 6 }}
+{{- end }}

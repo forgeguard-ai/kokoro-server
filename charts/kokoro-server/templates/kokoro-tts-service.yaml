@@ -4,6 +4,10 @@ metadata:
   name: {{ include "kokoro-server.fullname" . }}-kokoro-tts-service
   labels:
     {{- include "kokoro-server.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -11,5 +15,9 @@ spec:
       targetPort: kokoro-tts-http
       protocol: TCP
       name: kokoro-tts-http
+      # Tells anything that reads it — a service mesh, some ingress
+      # controllers — that the backend speaks TLS. ingress-nginx does NOT read
+      # this; it wants the backend-protocol annotation on the Ingress instead.
+      appProtocol: {{ if .Values.tls.enabled }}https{{ else }}http{{ end }}
   selector:
     {{- include "kokoro-server.selectorLabels" . | nindent 4 }}

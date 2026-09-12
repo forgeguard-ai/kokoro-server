@@ -1,0 +1,32 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-data" (include "kokoro-server.fullname" .) }}
+  labels:
+    {{- include "kokoro-server.labels" . | nindent 4 }}
+  {{- if or .Values.persistence.annotations .Values.persistence.retain }}
+  annotations:
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.persistence.retain }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- if .Values.persistence.storageClass }}
+  {{- if eq .Values.persistence.storageClass "-" }}
+  # "-" is the documented way to ask for no class at all (a pre-provisioned
+  # PV), which is different from leaving it empty (the cluster default).
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}

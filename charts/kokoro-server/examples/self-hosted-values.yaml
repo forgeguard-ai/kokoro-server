@@ -1,0 +1,92 @@
+# Self-hosted cluster with a preinstalled NVIDIA driver and container toolkit.
+#
+# This is the shape most on-premises clusters actually run, and the one the
+# other example in this directory does not cover: the driver and the container
+# toolkit are installed on the host (by the distribution, by JetPack, or by
+# hand), and the GPU Operator is deployed with its driver and toolkit
+# components switched OFF so it contributes only the device plugin, node
+# feature discovery, validation and DCGM:
+#
+#   helm upgrade --install gpu-operator nvidia/gpu-operator \
+#     --namespace gpu-operator --create-namespace \
+#     --set driver.enabled=false \
+#     --set toolkit.enabled=false \
+#     --set operator.runtimeClass=nvidia
+#
+# k3s and RKE2 create the `nvidia` RuntimeClass themselves once they detect the
+# toolkit's runtime; on a stock kubeadm cluster you may have to create it.
+#
+# Two things below are easy to get wrong and expensive to diagnose:
+#
+#   runtimeClassName  Without it the pod is scheduled onto a GPU node and then
+#                     starts with no visible card, because the default runtime
+#                     is not the NVIDIA one. `nvidia-smi` inside the container
+#                     fails and the server quietly falls back to CPU.
+#
+#   persistence       The self-signed certificate lives under the data
+#                     directory. Without a volume it is regenerated on every
+#                     restart, so every client sees a new fingerprint.
+
+kokoroTTS:
+  replicaCount: 1
+  pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      memory: 8Gi
+
+gpu:
+  enabled: true
+  resourceKey: nvidia.com/gpu
+  count: 1
+
+runtimeClassName: nvidia
+
+# The server speaks HTTPS itself — no reverse proxy, no sidecar. Swap in a real
+# certificate with tls.existingSecret when clients should not have to trust a
+# self-signed one.
+tls:
+  enabled: true
+  selfSigned: true
+  cn: kokoro.example.com
+  san:
+    - kokoro.internal.example.com
+
+persistence:
+  enabled: true
+  size: 5Gi
+  # storageClass: ""   # cluster default; "-" asks for a pre-provisioned PV
+  accessModes:
+    - ReadWriteOnce
+  retain: true
+
+# Pin to the node holding the card. A GPU node pool that carries nothing else
+# is usually tainted, so the matching toleration goes here too.
+nodeSelector: {}
+#  kubernetes.io/hostname: gpu-node-1
+tolerations: []
+#  - key: nvidia.com/gpu
+#    operator: Exists
+#    effect: NoSchedule
+
+# One replica cannot survive a drain, but a budget makes the drain say so
+# instead of taking the service away silently.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# The pod already serves HTTPS, so the Ingress must be told not to speak
+# plaintext to it. Passthrough is the alternative if you want the pod's own
+# certificate presented to clients end to end.
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+  hosts:
+    - host: kokoro.example.com
+      paths:
+        - path: /
+          pathType: Prefix

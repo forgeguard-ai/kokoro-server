@@ -11,5 +11,16 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      args: ['{{ include "kokoro-server.fullname" . }}-kokoro-tts-service:{{ .Values.kokoroTTS.port }}']
+      args:
+        - '-q'
+        - '-O'
+        - '-'
+        {{- if .Values.tls.enabled }}
+        # The certificate is self-signed unless one was supplied, and this test
+        # checks reachability, not trust.
+        - '--no-check-certificate'
+        {{- end }}
+        # /health is unauthenticated and answers 200 as soon as the process
+        # serves, before the model has warmed — which is what this should test.
+        - '{{ if .Values.tls.enabled }}https{{ else }}http{{ end }}://{{ include "kokoro-server.fullname" . }}-kokoro-tts-service:{{ .Values.kokoroTTS.port }}/health'
   restartPolicy: Never

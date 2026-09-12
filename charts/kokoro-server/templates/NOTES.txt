@@ -12,15 +12,49 @@ place — `helm uninstall` the old release and install this chart fresh.
 {{- else if contains "NodePort" .Values.service.type }}
   export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "kokoro-server.fullname" . }})
   export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
+  echo http{{ if .Values.tls.enabled }}s{{ end }}://$NODE_IP:$NODE_PORT
 {{- else if contains "LoadBalancer" .Values.service.type }}
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
            You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "kokoro-server.fullname" . }}'
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "kokoro-server.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:{{ .Values.kokoroTTS.port }}
+  echo http{{ if .Values.tls.enabled }}s{{ end }}://$SERVICE_IP:{{ .Values.kokoroTTS.port }}
 {{- else if contains "ClusterIP" .Values.service.type }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "kokoro-server.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
-  echo "Visit http://127.0.0.1:8880 to use your application"
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8880:$CONTAINER_PORT
+  echo "Visit http{{ if .Values.tls.enabled }}s{{ end }}://127.0.0.1:{{ .Values.kokoroTTS.port }} to use your application"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.kokoroTTS.port }}:$CONTAINER_PORT
+{{- end }}
+
+2. The OpenAI-compatible API lives under /v1, the web console at /web, and live
+   GPU + activity telemetry at /system (JSON, unauthenticated like /health).
+   /system is not Prometheus exposition format, so this chart ships no
+   ServiceMonitor — scraping it needs a collector that can read JSON.
+
+{{- if and .Values.tls.enabled (not .Values.persistence.enabled) (not .Values.tls.existingSecret) }}
+
+WARNING: tls.enabled is on, persistence.enabled is off, and no certificate was
+supplied. The self-signed certificate is written under the data directory, so
+it is regenerated on every restart and every client sees a new fingerprint.
+Enable persistence, or supply a certificate through tls.existingSecret.
+{{- end }}
+
+{{- if and .Values.tls.enabled .Values.ingress.enabled }}
+
+NOTE: the pod serves HTTPS and an Ingress fronts it. The ingress controller
+must be told the backend speaks TLS, or it will send plaintext to an SSL
+listener. For ingress-nginx, add to ingress.annotations:
+  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingress) }}
+
+WARNING: networkPolicy.enabled is on with no ingress rules, so nothing may
+reach this service — the Ingress controller included. Add a rule under
+networkPolicy.ingress, or turn the policy off.
+{{- end }}
+
+{{- if not .Values.gpu.enabled }}
+
+NOTE: gpu.enabled is false — USE_GPU=false and no accelerator is requested.
+Synthesis runs on CPU, which works but is markedly slower.
 {{- end }}

@@ -1,0 +1,45 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{/*
+Deny-by-default for this pod: naming both policy types with empty rule lists is
+what makes the default "nothing", rather than "everything".
+
+This only does anything on a cluster whose CNI enforces NetworkPolicy. Where it
+does not — and several do not — the object is accepted by the API server and
+silently ignored, which is why the chart leaves this off unless asked.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kokoro-server.fullname" . }}
+  labels:
+    {{- include "kokoro-server.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kokoro-server.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- with .Values.networkPolicy.ingress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.allowDNS }}
+    # Every egress rule set needs this. Omitting it produces name-resolution
+    # failures that look like anything but a network policy.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

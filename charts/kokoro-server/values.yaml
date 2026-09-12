@@ -12,28 +12,42 @@ kokoroTTS:
   port: 8880
 
   # Optional bearer-token auth. When enabled, the API_KEY env var is injected
-  # from an existing Secret and clients must send `Authorization: Bearer <key>`
-  # on API routes (/health, /ready, and the web console stay open).
+  # and clients must send `Authorization: Bearer <key>` on API routes
+  # (/health, /ready, /system, and the web console stay open).
+  #
+  # Supply the key one of two ways:
+  #   existingSecret — you manage the Secret (recommended for GitOps, where a
+  #                    literal in values would be committed)
+  #   value          — the chart creates the Secret for you
+  # Setting both is refused rather than silently preferring one.
   apiKey:
     enabled: false
     existingSecret: ""   # name of the Secret holding the key
     secretKey: "api-key" # key within that Secret
+    value: ""            # chart-created Secret; mutually exclusive with existingSecret
 
   # Extra environment variables for the container (name/value pairs).
   # e.g. WARMUP_ON_START, API_LOG_LEVEL, DEFAULT_VOICE — see the README.
+  # Rendered AFTER the values-derived variables, so an entry here overrides one
+  # this chart sets (the GPU and TLS blocks below).
   extraEnv: []
   #  - name: API_LOG_LEVEL
   #    value: DEBUG
 
-  resources:
-    limits:
-      nvidia.com/gpu: 1
-    requests:
-      nvidia.com/gpu: 1
+  # CPU/memory requests and limits. The GPU request is NOT written here — see
+  # the `gpu` block below, which owns the accelerator resource so the key is
+  # configurable and can be switched off wholesale.
+  resources: {}
+  #  limits:
+  #    memory: 8Gi
+  #  requests:
+  #    cpu: 500m
+  #    memory: 4Gi
 
   # Probes wired to the server's health contract:
   #   /health -> 200 as soon as the process serves (also during model warmup)
   #   /ready  -> 200 only once the model is warmed and synthesis will succeed
+  # `scheme: HTTPS` is added automatically when tls.enabled is true.
   probes:
     startup:
       httpGet:
@@ -57,6 +71,80 @@ kokoroTTS:
 nameOverride: ""
 fullnameOverride: ""
 
+# --- GPU -------------------------------------------------------------------
+# The accelerator request, kept out of `resources` so the resource KEY is a
+# value rather than a literal. `nvidia.com/gpu` is what the NVIDIA device
+# plugin advertises; other stacks advertise their own (an AMD cluster wants
+# `amd.com/gpu`, a shared-GPU scheduler its own vendor key).
+#
+# Setting enabled: false drops the request AND sets USE_GPU=false, which is a
+# genuinely usable CPU deployment for Kokoro — slower, but it serves.
+gpu:
+  enabled: true
+  resourceKey: nvidia.com/gpu
+  count: 1
+
+# The RuntimeClass the pod runs under. Required on clusters where the NVIDIA
+# container runtime is not the default: the GPU Operator's own operands run
+# under this, k3s creates it when it detects the toolkit, and without it the
+# container starts with no visible card even though the scheduler placed it on
+# a GPU node. Leave empty where the default runtime is already GPU-capable
+# (the GPU Operator's `toolkit` component sets that up for you).
+runtimeClassName: ""
+
+# --- TLS -------------------------------------------------------------------
+# The server speaks HTTPS itself (uvicorn SSL) — no sidecar, no reverse proxy.
+# With no certificate supplied it generates a self-signed one on first start
+# and persists it under {OUTPUT_DIR}/tls, so enable `persistence` too or every
+# restart mints a new certificate and every client sees a new fingerprint.
+#
+# Terminating TLS at an Ingress instead? Leave this off. If you enable BOTH,
+# the ingress controller must be told the backend speaks HTTPS — for
+# ingress-nginx that is:
+#   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+# in ingress.annotations below.
+tls:
+  enabled: false
+  # Generate a self-signed certificate when none is supplied. With this false
+  # and no certificate present the server exits rather than silently serving
+  # plaintext.
+  selfSigned: true
+  # CN and extra SANs for the generated certificate. Set cn to the name
+  # clients actually use, or they will reject it however valid it is.
+  cn: ""
+  san: []
+  # Mount a real certificate from an existing Secret (a cert-manager
+  # Certificate's secret works as-is). Takes precedence over self-signing.
+  existingSecret: ""
+  certSecretKey: tls.crt
+  keySecretKey: tls.key
+  # Explicit paths, for a certificate you mount yourself through
+  # extraVolumes/extraVolumeMounts. Empty means "under the data directory".
+  certFile: ""
+  keyFile: ""
+
+# --- Persistence -----------------------------------------------------------
+# Mounted at mountPath and exported to the server as OUTPUT_DIR. Holds
+# generated audio and — the reason to enable it even if you do not care about
+# the audio — the self-signed TLS certificate and key.
+#
+# Voice weights are baked into the image, so this volume is small and there is
+# no model download to cache. ReadWriteOnce is right for a single replica;
+# scaling past one replica needs ReadWriteMany or per-replica claims, which
+# this chart does not attempt (see the StatefulSet note in the README).
+persistence:
+  enabled: false
+  existingClaim: ""
+  mountPath: /data
+  size: 5Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+  # Keep the PVC when the release is uninstalled. Helm's resource policy is
+  # all-or-nothing per object, so this is the only lever.
+  retain: false
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
@@ -67,6 +155,7 @@ serviceAccount:
   name: ""
 
 podAnnotations: {}
+podLabels: {}
 
 # The container image runs as a non-root user (uid 1001). These defaults enforce
 # that at the pod/container level and drop all Linux capabilities. fsGroup makes
@@ -89,6 +178,7 @@ securityContext:
 
 service:
   type: ClusterIP
+  annotations: {}
 
 ingress:
   enabled: false
@@ -97,6 +187,8 @@ ingress:
     # cert-manager.io/cluster-issuer: letsencrypt-prod
     # external-dns.alpha.kubernetes.io/hostname: kokoro.example.com
     # external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+    # Required when tls.enabled is true — the backend speaks HTTPS:
+    # nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
   hosts:
     - host: kokoro.example.com
       paths:
@@ -115,8 +207,42 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
+# A single-replica GPU service gets evicted by any node drain. A PDB does not
+# prevent that — nothing can, with one replica — but it makes the drain block
+# and say so, instead of taking the service away silently.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+
+# Deny-by-default network posture. Only rendered when enabled, because a
+# NetworkPolicy on a cluster whose CNI does not enforce them is worse than
+# none: it reads as protection and is not.
+networkPolicy:
+  enabled: false
+  # Who may reach the server. Empty with enabled: true means "nothing may",
+  # which is a deliberate, if blunt, default.
+  ingress: []
+  #  - from:
+  #      - namespaceSelector:
+  #          matchLabels:
+  #            kubernetes.io/metadata.name: ingress-nginx
+  # Egress rules. DNS is allowed separately below because every rule set needs
+  # it and forgetting it produces a confusing failure.
+  egress: []
+  allowDNS: true
+
+priorityClassName: ""
+topologySpreadConstraints: []
+terminationGracePeriodSeconds: 30
+
 nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
+
+# Escape hatches for anything this chart does not model: a mounted CA bundle, a
+# second cache volume, a vendor's device configuration.
+extraVolumes: []
+extraVolumeMounts: []
