@@ -1,0 +1,92 @@
+# CPU-only deployment on a plain x86_64 cluster — no GPU, no device plugin, no
+# RuntimeClass.
+#
+# Worth saying plainly, because it surprises people: the published image is
+# built FROM nvidia/cuda and it runs perfectly well on a node with no NVIDIA
+# driver and no card. A CUDA base image is just a filesystem carrying the CUDA
+# user-space libraries; nothing in it runs at container start. Torch asks for a
+# device when the model loads, gets `cpu` from the setting below, and never
+# opens the driver. You do NOT need a separate CPU image, and there isn't one.
+#
+# What that costs you is pull size, not correctness — the image is around 8 GB
+# compressed because of the CUDA layers, so the first pod start on a fresh node
+# takes a while. Leave pullPolicy at IfNotPresent and let the node cache it.
+#
+# Architecture: the published images are linux/amd64. An arm64 (Jetson) image
+# is built only when a release is dispatched with publish_jetson, so on arm64
+# hardware check the tag exists before deploying.
+#
+# Kokoro is a better CPU citizen than most speech models — the voices are small
+# and baked into the image, so there is no model download and no cache volume
+# to size. Synthesis is simply slower than real time on modest cores; budget
+# accordingly rather than expecting a GPU deployment's latency.
+#
+# Two things below are easy to get wrong:
+#
+#   probes.startup  The default allows up to 300s for a cold model load, which
+#                   is tuned for a GPU. On CPU the load itself is not much
+#                   slower, but a busy node can push it — if the pod is killed
+#                   before it ever reports ready, raise failureThreshold here
+#                   rather than weakening the liveness probe.
+#
+#   resources       Synthesis is CPU-bound in a way the GPU deployment is not.
+#                   One core will serve, badly. Give it two or more if callers
+#                   expect anything close to interactive latency.
+
+kokoroTTS:
+  replicaCount: 1
+  pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "2"
+      memory: 2Gi
+    limits:
+      # No GPU memory to fall back on: the model and the audio buffers all live
+      # in system RAM.
+      memory: 6Gi
+  probes:
+    startup:
+      httpGet:
+        path: /ready
+        port: kokoro-tts-http
+      periodSeconds: 5
+      # 600s. A cold CPU load on a contended node is the one case where the
+      # GPU-tuned default is genuinely too tight.
+      failureThreshold: 120
+
+# The whole point of this file. Setting enabled: false drops the
+# nvidia.com/gpu request AND sets USE_GPU=false in the container.
+gpu:
+  enabled: false
+
+# Must stay empty. Naming a RuntimeClass that the cluster does not define is a
+# scheduling failure, not a fallback — the pod stays Pending with no obvious
+# reason. A CPU cluster has no `nvidia` RuntimeClass.
+runtimeClassName: ""
+
+# Still worth enabling without a GPU: OUTPUT_DIR holds the self-signed TLS pair
+# as well as generated audio, and a certificate regenerated on every restart is
+# a new fingerprint for every client.
+persistence:
+  enabled: true
+  size: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  retain: true
+
+tls:
+  enabled: false
+
+# A CPU deployment has no card to pin to, so it schedules anywhere. Left empty
+# deliberately — the GPU examples pin, this one must not.
+nodeSelector: {}
+tolerations: []
+
+ingress:
+  enabled: false
+  className: nginx
+  hosts:
+    - host: kokoro.example.com
+      paths:
+        - path: /
+          pathType: Prefix
