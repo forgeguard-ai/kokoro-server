@@ -8,6 +8,8 @@ Per-PR attribution and contributor credits are published automatically on the co
 
 ## [Unreleased]
 
+## [1.2.1]
+
 ### Security
 
 - **The web console builds on Node 26.12.1**, the October 2026 Node.js
