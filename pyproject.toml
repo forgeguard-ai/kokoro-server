@@ -25,6 +25,11 @@ dependencies = [
     "aiofiles==23.2.1",
     "tqdm==4.67.1",
     "requests==2.32.3",
+    # Floor for the CA bundle requests and httpx verify against: 2026.10.19
+    # drops the root behind the compromised eMudhra intermediates (emSign ECC
+    # Root CA - G3). The images resolve dependencies at build time, so this
+    # floor is what keeps a rebuild from landing on an older bundle.
+    "certifi>=2026.10.19",
     "munch==4.0.0",
     "tiktoken==0.8.0",
     "loguru==0.7.3",

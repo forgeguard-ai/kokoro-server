@@ -17,7 +17,10 @@
 ARG L4T_JETPACK_TAG=r36.4.0
 
 # Stage 0: Build the web console (Vite/React) into static assets.
-FROM node:22-slim AS webbuild
+# Node 26.12.1: the October 2026 Node.js security release (CVE-2026-111497,
+# the Brotli decoder; and a CA store without the compromised eMudhra roots).
+# Pinned by the multi-arch index digest, so amd64 and arm64 builds agree.
+FROM node:26.12.1-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS webbuild
 WORKDIR /web
 COPY web/package*.json ./
 RUN npm ci
