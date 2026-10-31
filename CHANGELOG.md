@@ -6,6 +6,24 @@ based on [Keep a Changelog](https://keepachangelog.com/) and this project follow
 
 Per-PR attribution and contributor credits are published automatically on the corresponding GitHub release page; this file is the curated, human-readable summary.
 
+## [Unreleased]
+
+## [1.2.1]
+
+### Security
+
+- **The web console builds on Node 26.12.1**, the October 2026 Node.js
+  security release (CVE-2026-111497 in the Brotli decoder, plus a CA store
+  without the compromised eMudhra roots). Both images pin `node:26.12.1-slim`
+  by its multi-arch digest; it was the floating `node:22-slim`. The Node stage
+  only builds static assets, but a build should not run on a vulnerable
+  runtime either.
+- **`certifi>=2026.10.19`**: the CA bundle the server's HTTP clients verify
+  against. 2026.10.19 removes the root behind the compromised eMudhra
+  intermediates (emSign ECC Root CA - G3). The images resolve dependencies at
+  build time, so the floor keeps a rebuild from landing on an older bundle.
+  The integration test client's lock moves to the same release.
+
 ## [1.2.0]
 
 **A Helm chart release: the server code is unchanged.** The version moves
